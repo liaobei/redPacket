@@ -14,6 +14,7 @@ CREATE TABLE `RedPacket` (
   `grabTotal` double(10,2) NOT NULL DEFAULT '0.00' COMMENT '已抢金额',
   `grabCount` int(11) NOT NULL DEFAULT '0' COMMENT '已抢个数',
   `remark` varchar(255) NOT NULL COMMENT '备注',
+  `valid` tinyint not null DEFAULT TRUE COMMENT '是否生效',
   `createTime` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
   KEY `idx_user` (`userId`)
