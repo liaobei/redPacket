@@ -12,12 +12,15 @@ import java.util.concurrent.TimeUnit;
 import javax.annotation.Resource;
 import javax.transaction.Transactional;
 
+import org.joda.time.DateTime;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.stereotype.Service;
 
+import com.baomidou.mybatisplus.extension.conditions.query.QueryChainWrapper;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
 import com.liaobei.redpacket.common.exception.RedPacketException;
-import com.liaobei.redpacket.common.lock.RedisLock;
 import com.liaobei.redpacket.common.lock.RedisLockHelper;
 import com.liaobei.redpacket.common.po.AccountPO;
 import com.liaobei.redpacket.common.po.RedPacketPO;
@@ -40,18 +43,12 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Service
 @Slf4j
-public class RedPacketServiceImpl implements RedPacketService {
+public class RedPacketServiceImpl implements RedPacketService, ApplicationListener<ContextRefreshedEvent> {
     private static final String RED_PACKET_KEY_PREFIX = "redPacketCacheKey";
     private static final String GRAB_RED_PACKET_KEY_PREFIX = "grabRedPacketCacheKey";
     private static final String REDIS_LOCK_SUFFIX = "redisLockSuffix";
+    private static final Integer MONEY_BACK_TIME = 60 * 60 * 24;
     private static ScheduledExecutorService executor = new ScheduledThreadPoolExecutor(1);
-
-    static {
-        executor.schedule(() -> {
-            // todo
-
-        }, 1, TimeUnit.HOURS);
-    }
 
     @Resource
     private RedPacketMapper redPacketMapper;
@@ -62,8 +59,6 @@ public class RedPacketServiceImpl implements RedPacketService {
     @Resource
     private RedisLockHelper redisLockHelper;
 
-
-
     @Override
     @Transactional(rollbackOn = Exception.class)
     public BaseResponse dispatch(DispatchRequest request) {
@@ -73,11 +68,12 @@ public class RedPacketServiceImpl implements RedPacketService {
         redPacketMapper.insert(redPacketPO);
         redisUtils.set(redPacketPO.getId().toString(), redPacketPO.getTotal(), 10);
 
-        List<BigDecimal> diffList = initIndex(request.getCount(), redPacketPO.getTotal());
+        List<BigDecimal> diffList = initRandomIndex(request.getCount(), redPacketPO.getTotal());
 
         BigDecimal total = new BigDecimal(redPacketPO.getTotal().toString());
         BigDecimal consume = new BigDecimal("0");
         for (BigDecimal d : diffList) {
+            // 用总金额 * 随机比例 = 得到的金额
             String small = total.multiply(new BigDecimal(d.toString())).toString();
             log.debug("small is {}", small);
 
@@ -85,6 +81,7 @@ public class RedPacketServiceImpl implements RedPacketService {
             redisUtils.lSet(geneKey(RED_PACKET_KEY_PREFIX, redPacketPO.getId().toString()), Double.valueOf(small));
         }
         log.debug("small is {}", total.subtract(new BigDecimal(consume.toString())).doubleValue());
+        // 小红包插入redis
         redisUtils.lSet(geneKey(RED_PACKET_KEY_PREFIX, redPacketPO.getId().toString()), total.subtract(consume).doubleValue());
         redisLockHelper.unlock(geneKey(REDIS_LOCK_SUFFIX, request.getUserId().toString()));
         return MessageResponse.success("发送成功");
@@ -102,12 +99,40 @@ public class RedPacketServiceImpl implements RedPacketService {
         accountMapper.updateById(accountPO);
 
         RedPacketPO redPacketPO = redPacketMapper.selectById(request.getRedPacketId());
+        if (!redPacketPO.getValid()) {
+            throw new RedPacketException("红包已失效");
+        }
         redPacketPO.setGrabCount(redPacketPO.getGrabCount() + 1);
         redPacketPO.setGrabTotal(BigDecimalUtils.doubleAdd(redPacketPO.getGrabTotal(), count));
         redPacketMapper.updateById(redPacketPO);
         redisUtils.hset(geneKey(GRAB_RED_PACKET_KEY_PREFIX), request.getRedPacketId().toString(), request.getUserId());
         redisLockHelper.unlock(geneKey(REDIS_LOCK_SUFFIX, request.getUserId().toString()));
         return GrabResponse.success(count);
+    }
+
+    @Override
+    @Transactional(rollbackOn = Exception.class)
+    public void onApplicationEvent(ContextRefreshedEvent event) {
+        executor.schedule(() -> {
+            QueryChainWrapper<RedPacketPO> wrapper = new QueryChainWrapper<>(redPacketMapper);
+            wrapper.eq("valid", true);
+            wrapper.le("createTime", DateTime.now().minusSeconds(MONEY_BACK_TIME).toDate());
+            List<RedPacketPO> expireRedPacket = redPacketMapper.selectList(wrapper);
+            expireRedPacket.forEach(p -> {
+                redisLockHelper.lock(geneKey(REDIS_LOCK_SUFFIX, p.getUserId().toString()), 3000);
+                // 退剩余钱给用户
+                Double left = BigDecimalUtils.doubleMinus(p.getTotal(), p.getGrabTotal());
+                AccountPO accountPO = accountMapper.selectById(p.getUserId());
+                accountPO.setBalance(BigDecimalUtils.doubleAdd(left, accountPO.getBalance()));
+                accountMapper.updateById(accountPO);
+                // 把红包的生效状态标识为false
+                p.setValid(false);
+                redPacketMapper.updateById(p);
+                redisLockHelper.unlock(geneKey(REDIS_LOCK_SUFFIX, p.getUserId().toString()));
+            });
+        }, 10, TimeUnit.SECONDS);
+
+
     }
 
     private void grabArgsValidate(GrabRequest request) {
@@ -137,19 +162,23 @@ public class RedPacketServiceImpl implements RedPacketService {
         if (request.getCount() > 100) {
             throw new RedPacketException("红包数量不能超过100");
         }
-        // if (StringUtils.isEmpty(request.getRemark())) {
-        // throw new RedPacketException("备注不能为空");
-        // }
         AccountPO accountPO = accountMapper.selectById(request.getUserId());
         Double left;
-        if ((left = (new BigDecimal(accountPO.getBalance().toString()).subtract(new BigDecimal(request.getTotal().toString())).doubleValue())) < 0) {
+        if ((left = BigDecimalUtils.doubleMinus(accountPO.getBalance(), request.getTotal())) < 0) {
             throw new RedPacketException("余额不足");
         }
         accountPO.setBalance(left);
         accountMapper.updateById(accountPO);
     }
 
-    private List<BigDecimal> initIndex(Integer count, Double total) {
+    /**
+     * 获取随机数比例
+     * 
+     * @param count
+     * @param total
+     * @return
+     */
+    private List<BigDecimal> initRandomIndex(Integer count, Double total) {
         ThreadLocalRandom random = ThreadLocalRandom.current();
         List<Double> indexList = Lists.newArrayList();
         while (indexList.size() < count - 1) {
@@ -168,11 +197,15 @@ public class RedPacketServiceImpl implements RedPacketService {
                 continue;
             }
 
-            BigDecimal decimal = new BigDecimal(indexList.get(i).toString()).subtract(new BigDecimal(indexList.get(i - 1).toString()));
+            BigDecimal decimal = new BigDecimal(BigDecimalUtils.doubleMinus(indexList.get(i), indexList.get(i - 1)).toString());
+
             diffList.add(decimal);
             i++;
         }
 
         return diffList;
     }
+
+
+
 }

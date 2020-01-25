@@ -28,6 +28,7 @@ public class RedPacketPO implements Serializable {
     @TableField("grabTotal")
     private Double grabTotal;
     private String remark;
+    private Boolean valid;
     @TableField("createTime")
     private Date createTime;
 }
