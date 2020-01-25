@@ -27,8 +27,8 @@ import com.liaobei.redpacket.common.po.RedPacketPO;
 import com.liaobei.redpacket.common.request.DispatchRequest;
 import com.liaobei.redpacket.common.request.GrabRequest;
 import com.liaobei.redpacket.common.response.BaseResponse;
+import com.liaobei.redpacket.common.response.DispatchResponse;
 import com.liaobei.redpacket.common.response.GrabResponse;
-import com.liaobei.redpacket.common.response.MessageResponse;
 import com.liaobei.redpacket.common.utils.BigDecimalUtils;
 import com.liaobei.redpacket.common.utils.ConvertUtils;
 import com.liaobei.redpacket.common.utils.RedisUtils;
@@ -84,7 +84,7 @@ public class RedPacketServiceImpl implements RedPacketService, ApplicationListen
         // 小红包插入redis
         redisUtils.lSet(geneKey(RED_PACKET_KEY_PREFIX, redPacketPO.getId().toString()), total.subtract(consume).doubleValue());
         redisLockHelper.unlock(geneKey(REDIS_LOCK_SUFFIX, request.getUserId().toString()));
-        return MessageResponse.success("发送成功");
+        return DispatchResponse.success(redPacketPO.getId());
     }
 
     @Override
@@ -205,7 +205,4 @@ public class RedPacketServiceImpl implements RedPacketService, ApplicationListen
 
         return diffList;
     }
-
-
-
 }
