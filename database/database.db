@@ -1,0 +1,20 @@
+CREATE TABLE `Account` (
+  `userId` int(11) NOT NULL COMMENT '用户Id',
+  `balance` double(10,2) NOT NULL COMMENT '余额',
+  `createTime` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updateTime` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`userId`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `RedPacket` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `userId` int(11) NOT NULL COMMENT '用户Id',
+  `count` int(11) NOT NULL COMMENT '红包个数',
+  `total` double(10,2) NOT NULL COMMENT '红包总金额',
+  `grabTotal` double(10,2) NOT NULL DEFAULT '0.00' COMMENT '已抢金额',
+  `grabCount` int(11) NOT NULL DEFAULT '0' COMMENT '已抢个数',
+  `remark` varchar(255) NOT NULL COMMENT '备注',
+  `createTime` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_user` (`userId`)
+) ENGINE=InnoDB AUTO_INCREMENT=57 DEFAULT CHARSET=utf8mb4;
